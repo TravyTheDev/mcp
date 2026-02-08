@@ -1,10 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"os"
+	"log"
+	"mcp-server/ai"
+
+	"github.com/joho/godotenv"
 )
 
 type MCPMessage struct {
@@ -21,30 +23,35 @@ type ModelResponse struct {
 }
 
 func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Fprintln(os.Stderr, "MCP Server started. Waiting for input...")
-	for scanner.Scan() {
-		// Read input message
-		input := scanner.Text()
-		// Parse the MCP message
-		var message MCPMessage
-		if err := json.Unmarshal([]byte(input), &message); err != nil {
-			sendError(err)
-			continue
-		}
-		// Process the message based on its type
-		switch message.Type {
-		case "request":
-			handleRequest(message.Content)
-		case "ping":
-			handlePing()
-		default:
-			sendError(fmt.Errorf("unknown message type: %s", message.Type))
-		}
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
 	}
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
-	}
+	// scanner := bufio.NewScanner(os.Stdin)
+	// fmt.Fprintln(os.Stderr, "MCP Server started. Waiting for input...")
+	// for scanner.Scan() {
+	// 	// Read input message
+	// 	input := scanner.Text()
+	// 	// Parse the MCP message
+	// 	var message MCPMessage
+	// 	if err := json.Unmarshal([]byte(input), &message); err != nil {
+	// 		sendError(err)
+	// 		continue
+	// 	}
+	// 	// Process the message based on its type
+	// 	switch message.Type {
+	// 	case "request":
+	// 		handleRequest(message.Content)
+	// 	case "ping":
+	// 		handlePing()
+	// 	default:
+	// 		sendError(fmt.Errorf("unknown message type: %s", message.Type))
+	// 	}
+	// }
+	// if err := scanner.Err(); err != nil {
+	// 	fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+	// }
+	ai.Run()
 }
 
 func handleRequest(content json.RawMessage) {

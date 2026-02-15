@@ -1,1 +1,4 @@
 /server/.env
+/server/db/app.db
+/server/mcp-server
+/client/.env

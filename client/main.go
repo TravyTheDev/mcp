@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
+	"net/http"
 	"os"
-	"os/exec"
 
 	"github.com/joho/godotenv"
 	"google.golang.org/genai"
@@ -43,27 +42,11 @@ func main() {
 	ctx := context.Background()
 	prompt := "I am a cat, which human is best for me?"
 
-	cmd := exec.Command("../server/mcp-server")
-	cmd.Dir = "../server"
-
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		log.Fatal(err)
-	}
-	defer cmd.Process.Kill()
-
-	sendRequest(stdin, "initialize", map[string]any{
+	callMCPServer("initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]string{"name": "my-fun-client", "version": "1.0.0"},
-	}, 1)
-	readResponse(stdout)
+	})
 
-	sendRequest(stdin, "tools/list", map[string]any{}, 2)
-	toolData := readResponse(stdout)
+	toolData := callMCPServer("tools/list", map[string]any{})
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  os.Getenv("API_KEY"),
@@ -80,10 +63,10 @@ func main() {
 
 	geminiTools := convertMcpToGemini(toolData)
 
-	runGeminiLoop(ctx, client, stdin, stdout, prompt, geminiTools)
+	runGeminiLoop(ctx, client, prompt, geminiTools)
 }
 
-func runGeminiLoop(ctx context.Context, client *genai.Client, serverIn io.WriteCloser, serverOut io.Reader, prompt string, tools []*genai.Tool) {
+func runGeminiLoop(ctx context.Context, client *genai.Client, prompt string, tools []*genai.Tool) {
 	model := "gemini-3-flash-preview"
 	history := []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: prompt}}}}
 
@@ -110,12 +93,10 @@ func runGeminiLoop(ctx context.Context, client *genai.Client, serverIn io.WriteC
 
 		fmt.Printf("--- Gemini calling tool: %s ---\n", toolCall.Name)
 
-		sendRequest(serverIn, "tools/call", map[string]any{
+		toolResultRaw := callMCPServer("tools/call", map[string]any{
 			"name":      toolCall.Name,
 			"arguments": toolCall.Args,
-		}, 3)
-
-		toolResultRaw := readResponse(serverOut)
+		})
 
 		var mcpResult struct {
 			Content []struct {
@@ -136,24 +117,41 @@ func runGeminiLoop(ctx context.Context, client *genai.Client, serverIn io.WriteC
 	}
 }
 
-func sendRequest(w io.Writer, method string, params any, id int) {
-	req := JSONRPCRequest{
+func callMCPServer(method string, params any) json.RawMessage {
+	url := "http://localhost:8080/mcp"
+
+	reqPayload := JSONRPCRequest{
 		JSONRPC: "2.0",
-		ID:      id,
 		Method:  method,
 		Params:  params,
+		ID:      1,
 	}
-	json.NewEncoder(w).Encode(req)
-}
 
-func readResponse(r io.Reader) json.RawMessage {
-	scanner := bufio.NewScanner(r)
-	if scanner.Scan() {
-		var resp JSONRPCResponse
-		json.Unmarshal(scanner.Bytes(), &resp)
-		return resp.Result
+	jsonData, err := json.Marshal(reqPayload)
+	if err != nil {
+		log.Printf("Error marshaling request: %v", err)
+		return nil
 	}
-	return nil
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to connect to MCP server: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var r JSONRPCResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		log.Printf("Error decoding response: %v", err)
+		return nil
+	}
+
+	if r.Error != nil {
+		log.Printf("Server returned error: %v", r.Error)
+		return nil
+	}
+
+	return r.Result
 }
 
 func convertMcpToGemini(toolData json.RawMessage) []*genai.Tool {
@@ -171,7 +169,6 @@ func convertMcpToGemini(toolData json.RawMessage) []*genai.Tool {
 			Description: mcpTool.Description,
 		}
 
-		// Map the JSON Schema to Gemini Schema
 		if mcpTool.InputSchema != nil {
 			decl.Parameters = mapJsonSchemaToGemini(mcpTool.InputSchema)
 		}
@@ -183,7 +180,6 @@ func convertMcpToGemini(toolData json.RawMessage) []*genai.Tool {
 }
 
 func mapJsonSchemaToGemini(schema map[string]interface{}) *genai.Schema {
-	// Simple version: MCP Tools usually define an "object" at the top level
 	gSchema := &genai.Schema{
 		Type: genai.TypeObject,
 	}
@@ -197,7 +193,6 @@ func mapJsonSchemaToGemini(schema map[string]interface{}) *genai.Schema {
 	for name, details := range properties {
 		propMap := details.(map[string]interface{})
 
-		// Map JSON types (string, number, etc) to Gemini Types
 		var propType genai.Type
 		switch propMap["type"] {
 		case "string":

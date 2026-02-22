@@ -10,7 +10,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/rs/cors"
 	"google.golang.org/genai"
 	_ "modernc.org/sqlite"
@@ -41,22 +40,24 @@ type ChatRequest struct {
 }
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
+	// err := godotenv.Load()
+	// if err != nil {
+	// 	log.Fatal("Error loading .env file")
+	// }
 	router := http.NewServeMux()
-	frontUrl := "http://localhost:4321"
+	PORT := os.Getenv("PORT")
+	frontUrl := os.Getenv("FRONT_URL")
+	frontUrlWWW := os.Getenv("FRONT_URL_WWW")
 
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{frontUrl},
+		AllowedOrigins:   []string{frontUrl, frontUrlWWW},
 		AllowCredentials: true,
 		AllowedMethods:   []string{http.MethodOptions, http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch},
 	})
 
 	handler := c.Handler(router)
 	server := http.Server{
-		Addr:    ":1337",
+		Addr:    PORT,
 		Handler: handler,
 	}
 	ctx := context.Background()
@@ -82,7 +83,7 @@ func main() {
 
 	geminiTools := convertMcpToGemini(toolData)
 
-	router.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
+	router.HandleFunc("/mcp_client/chat", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Use POST", 405)
 			return
@@ -102,165 +103,66 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
-// func runGeminiLoop(w http.ResponseWriter, ctx context.Context, client *genai.Client, prompt string, tools []*genai.Tool) {
-// 	flusher, _ := w.(http.Flusher)
-// 	model := "gemini-3-flash-preview"
-// 	history := []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: prompt}}}}
-
-// 	for {
-// 		fmt.Fprint(w, "Thinking... ")
-// 		flusher.Flush()
-// 		resp, err := client.Models.GenerateContent(ctx, model, history, &genai.GenerateContentConfig{Tools: tools})
-// 		if err != nil {
-// 			fmt.Fprintln(w, "Error calling Gemini:", err)
-// 			return
-// 		}
-
-// 		candidate := resp.Candidates[0]
-// 		history = append(history, candidate.Content)
-
-// 		var toolCall *genai.FunctionCall
-// 		for _, part := range candidate.Content.Parts {
-// 			if part.FunctionCall != nil {
-// 				toolCall = part.FunctionCall
-// 			}
-// 		}
-
-// 		if toolCall == nil {
-// 			fmt.Fprintln(w, resp.Text())
-// 			flusher.Flush()
-// 			break
-// 		}
-
-// 		fmt.Fprintf(w, "[System: Consulting database via %s...]\n", toolCall.Name)
-// 		flusher.Flush()
-
-// 		toolResultRaw := callMCPServer("tools/call", map[string]any{
-// 			"name":      toolCall.Name,
-// 			"arguments": toolCall.Args,
-// 		})
-
-// 		var mcpResult struct {
-// 			Content []struct {
-// 				Text string `json:"text"`
-// 			} `json:"content"`
-// 		}
-// 		json.Unmarshal(toolResultRaw, &mcpResult)
-
-// 		history = append(history, &genai.Content{
-// 			Role: "tool",
-// 			Parts: []*genai.Part{{
-// 				FunctionResponse: &genai.FunctionResponse{
-// 					Name:     toolCall.Name,
-// 					Response: map[string]any{"result": mcpResult.Content[0].Text},
-// 				},
-// 			}},
-// 		})
-// 	}
-// }
-
 func runGeminiLoop(w http.ResponseWriter, ctx context.Context, client *genai.Client, prompt string, tools []*genai.Tool) {
 	flusher, _ := w.(http.Flusher)
-	modelName := "gemini-3-flash-preview"
-
-	// 1. Initialize the Chat Session
-	// The nil history starts a fresh conversation
-	chat, err := client.Chats.Create(ctx, modelName, &genai.GenerateContentConfig{
-		Tools: tools,
-	}, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Create the initial message
-	msg := []genai.Part{
-		{Text: prompt},
-	}
+	model := "gemini-3-flash-preview"
+	history := []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: prompt}}}}
 
 	for {
-		// 2. Send the message (or tool results) via stream
-		iter := chat.SendMessageStream(ctx, msg...)
-
-		var currentToolCalls []*genai.FunctionCall
-
-		// 3. Consume the stream
-		for resp, err := range iter {
-			if err != nil {
-				fmt.Fprintf(w, "\n[Stream Error: %v]\n", err)
-				return
-			}
-
-			if len(resp.Candidates) == 0 {
-				continue
-			}
-
-			for _, part := range resp.Candidates[0].Content.Parts {
-				// Stream text to client
-				if part.Text != "" {
-					fmt.Fprint(w, part.Text)
-					if flusher != nil {
-						flusher.Flush()
-					}
-				}
-
-				// Collect tool calls
-				if part.FunctionCall != nil {
-					currentToolCalls = append(currentToolCalls, part.FunctionCall)
-				}
-			}
-		}
-
-		// 4. If no tools were called, the model is done responding
-		if len(currentToolCalls) == 0 {
-			fmt.Fprint(w, "\n")
+		fmt.Fprint(w, "Thinking... ")
+		flusher.Flush()
+		resp, err := client.Models.GenerateContent(ctx, model, history, &genai.GenerateContentConfig{Tools: tools})
+		if err != nil {
+			fmt.Fprintln(w, "Error calling Gemini:", err)
 			return
 		}
 
-		// 5. Prepare the Tool Response message for the NEXT iteration
-		var responseParts []genai.Part
-		for _, tc := range currentToolCalls {
-			fmt.Fprintf(w, "\n[System: Calling %s...]\n", tc.Name)
-			if flusher != nil {
-				flusher.Flush()
+		candidate := resp.Candidates[0]
+		history = append(history, candidate.Content)
+
+		var toolCall *genai.FunctionCall
+		for _, part := range candidate.Content.Parts {
+			if part.FunctionCall != nil {
+				toolCall = part.FunctionCall
 			}
+		}
 
-			toolResultRaw := callMCPServer("tools/call", map[string]any{
-				"name":      tc.Name,
-				"arguments": tc.Args,
-			})
+		if toolCall == nil {
+			fmt.Fprintln(w, resp.Text())
+			flusher.Flush()
+			break
+		}
 
-			// Handle the MCP result
-			var mcpResult struct {
-				Content []struct {
-					Text string `json:"text"`
-				} `json:"content"`
-			}
+		fmt.Fprintf(w, "[System: Consulting database via %s...]\n", toolCall.Name)
+		flusher.Flush()
 
-			resText := ""
-			if err := json.Unmarshal(toolResultRaw, &mcpResult); err != nil {
-				resText = string(toolResultRaw)
-			} else if len(mcpResult.Content) > 0 {
-				resText = mcpResult.Content[0].Text
-			}
+		toolResultRaw := callMCPServer("tools/call", map[string]any{
+			"name":      toolCall.Name,
+			"arguments": toolCall.Args,
+		})
 
-			responseParts = append(responseParts, genai.Part{
+		var mcpResult struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		json.Unmarshal(toolResultRaw, &mcpResult)
+
+		history = append(history, &genai.Content{
+			Role: "tool",
+			Parts: []*genai.Part{{
 				FunctionResponse: &genai.FunctionResponse{
-					Name:     tc.Name,
-					Response: map[string]any{"result": resText},
+					Name:     toolCall.Name,
+					Response: map[string]any{"result": mcpResult.Content[0].Text},
 				},
-			})
-		}
-
-		// Set msg to the tool results for the next SendMessageStream call
-		msg = []genai.Part{}
-		for _, rp := range responseParts {
-			msg = append(msg, rp)
-		}
+			}},
+		})
 	}
 }
 
 func callMCPServer(method string, params any) json.RawMessage {
-	url := "http://localhost:8080/mcp"
+	SERVER_PORT := os.Getenv("MCP_PORT")
+	url := fmt.Sprintf("http://localhost%s/mcp_api/client_request", SERVER_PORT)
 
 	reqPayload := JSONRPCRequest{
 		JSONRPC: "2.0",

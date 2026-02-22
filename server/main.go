@@ -2,13 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"mcp-server/db"
 	"mcp-server/services/humans"
 	"net/http"
+	"os"
 
-	"github.com/joho/godotenv"
+	"github.com/rs/cors"
 )
 
 type JSONRPCRequest struct {
@@ -24,19 +26,54 @@ type CallToolParams struct {
 }
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
+	// err := godotenv.Load()
+	// if err != nil {
+	// 	log.Fatal("Error loading .env file")
+	// }
 
+	frontUrl := os.Getenv("FRONT_URL")
+	frontUrlWWW := os.Getenv("FRONT_URL_WWW")
+	PORT := os.Getenv("PORT")
+
+	router := http.NewServeMux()
 	database, err := db.NewSqlStorage()
 	if err != nil {
 		log.Fatalf("Failed to connect to DB: %v", err)
 	}
 	defer database.Close()
+
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{frontUrl, frontUrlWWW},
+		AllowCredentials: true,
+		AllowedMethods:   []string{http.MethodOptions, http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch},
+	})
+
+	handler := c.Handler(router)
+	server := http.Server{
+		Addr:    PORT,
+		Handler: handler,
+	}
+
 	humanStore := humans.NewHumanStore(database)
 
-	http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+	router.HandleFunc("/mcp_api/load_humans", func(w http.ResponseWriter, r *http.Request) {
+		res, err := humanStore.GetHumans()
+		if err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			fmt.Println(err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Header().Add("Content-Type", "application/json")
+
+		if err := json.NewEncoder(w).Encode(res); err != nil {
+			http.Error(w, "error getting user", http.StatusInternalServerError)
+			fmt.Println(err)
+			return
+		}
+	})
+
+	router.HandleFunc("/mcp_api/client_request", func(w http.ResponseWriter, r *http.Request) {
 		var req JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request", http.StatusBadRequest)
@@ -91,8 +128,7 @@ func main() {
 			log.Printf("Received unknown method: %s", req.Method)
 		}
 	})
-	log.Println("Server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(server.ListenAndServe())
 }
 
 func sendResponse(w io.Writer, id any, result any) {

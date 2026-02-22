@@ -2,3 +2,5 @@
 /server/db/app.db
 /server/mcp-server
 /client/.env
+/client/mcp-client
+/frontend/mcp-frontend/dist
